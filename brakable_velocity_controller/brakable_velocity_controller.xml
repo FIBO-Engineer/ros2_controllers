@@ -1,0 +1,8 @@
+<library path="brakable_velocity_controller">
+  <class name="brakable_velocity_controller/BrakableVelocityController"
+         type="brakable_velocity_controller::BrakableVelocityController" base_class_type="controller_interface::ChainableControllerInterface">
+  <description>
+    BrakableVelocityController ros2_control controller.
+  </description>
+  </class>
+</library>
