@@ -295,6 +295,37 @@ std::tuple<std::vector<double>, std::vector<double>> SteeringOdometry::get_comma
       steering_commands = {alpha_r, alpha_l};
     }
     return std::make_tuple(traction_commands, steering_commands);
+  } 
+  else if (config_type_ == BRAKABLE_CONFIG)
+  {
+    const double Kp = 0.002;
+    const double Ki = 0.000; // may be 0.00001 
+    const double Kd = 0.000;
+    const double max_brake_dist = 0.01, min_brake_dist = 0.00;
+    static double acc_linear_error = 0, prev_linear = linear_, prev_linear_error = 0;
+    static double max_acc_linear_errror = 100.0; // 2 times of 5 m/s error
+
+    double linear_error = v_bx - linear_; // v_bx = cmd, linear_ = current
+    double Bd = -(
+                Kp * linear_error + 
+                Ki * acc_linear_error + 
+                Kd * (linear_error - prev_linear_error));
+    // Negative means Brake distance contribute negative force.
+
+    // Linear error: 5 m/s Brake distance: 0.01
+    if(Bd > max_brake_dist){
+      Bd = max_brake_dist;
+    } else if (Bd < min_brake_dist) {
+      Bd = min_brake_dist;
+    }
+    
+    prev_linear = linear_;
+    prev_linear_error = linear_error;
+    acc_linear_error += linear_error;
+
+    std::vector<double> traction_commands = {Ws, Bd};
+    std::vector<double> steering_commands = {phi};
+    return std::make_tuple(traction_commands, steering_commands);
   }
   else
   {
