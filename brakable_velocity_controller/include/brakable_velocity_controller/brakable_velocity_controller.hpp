@@ -94,14 +94,10 @@ protected:
   std::shared_ptr<brakable_velocity_controller::ParamListener> param_listener_;
   brakable_velocity_controller::Params params_;
 
-  std::vector<std::string> reference_and_state_dof_names_;
-  size_t dof_;
   std::vector<double> measured_state_values_;
 
   using PidPtr = std::shared_ptr<control_toolbox::PidROS>;
-  std::vector<PidPtr> pids_;
-  // Feed-forward velocity weight factor when calculating closed loop pid adapter's command
-  std::vector<double> feedforward_gain_;
+  PidPtr pid_;
 
   // Command subscribers and Controller State publisher
   rclcpp::Subscription<ControllerReferenceMsg>::SharedPtr ref_subscriber_ = nullptr;
@@ -109,9 +105,6 @@ protected:
 
   rclcpp::Subscription<ControllerMeasuredStateMsg>::SharedPtr measured_state_subscriber_ = nullptr;
   realtime_tools::RealtimeBuffer<std::shared_ptr<ControllerMeasuredStateMsg>> measured_state_;
-
-  rclcpp::Service<ControllerModeSrvType>::SharedPtr set_feedforward_control_service_;
-  realtime_tools::RealtimeBuffer<feedforward_mode_type> control_mode_;
 
   using ControllerStatePublisher = realtime_tools::RealtimePublisher<ControllerStateMsg>;
 

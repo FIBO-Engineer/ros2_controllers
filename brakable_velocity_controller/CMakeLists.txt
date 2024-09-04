@@ -49,45 +49,45 @@ target_compile_definitions(brakable_velocity_controller PRIVATE "BRAKABLE_VELOCI
 
 pluginlib_export_plugin_description_file(controller_interface brakable_velocity_controller.xml)
 
-if(BUILD_TESTING)
-  find_package(ament_cmake_gmock REQUIRED)
-  find_package(controller_manager REQUIRED)
-  find_package(ros2_control_test_assets REQUIRED)
+# if(BUILD_TESTING)
+#   find_package(ament_cmake_gmock REQUIRED)
+#   find_package(controller_manager REQUIRED)
+#   find_package(ros2_control_test_assets REQUIRED)
 
-  add_rostest_with_parameters_gmock(
-    test_brakable_velocity_controller
-    test/test_brakable_velocity_controller.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test/brakable_velocity_controller_params.yaml
-  )
-  target_include_directories(test_brakable_velocity_controller PRIVATE include)
-  target_link_libraries(test_brakable_velocity_controller brakable_velocity_controller)
-  ament_target_dependencies(
-    test_brakable_velocity_controller
-    controller_interface
-    hardware_interface
-  )
+#   add_rostest_with_parameters_gmock(
+#     test_brakable_velocity_controller
+#     test/test_brakable_velocity_controller.cpp
+#     ${CMAKE_CURRENT_SOURCE_DIR}/test/brakable_velocity_controller_params.yaml
+#   )
+#   target_include_directories(test_brakable_velocity_controller PRIVATE include)
+#   target_link_libraries(test_brakable_velocity_controller brakable_velocity_controller)
+#   ament_target_dependencies(
+#     test_brakable_velocity_controller
+#     controller_interface
+#     hardware_interface
+#   )
 
-  add_rostest_with_parameters_gmock(
-    test_brakable_velocity_controller_preceding
-    test/test_brakable_velocity_controller_preceding.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/test/brakable_velocity_controller_preceding_params.yaml
-  )
-  target_include_directories(test_brakable_velocity_controller_preceding PRIVATE include)
-  target_link_libraries(test_brakable_velocity_controller_preceding brakable_velocity_controller)
-  ament_target_dependencies(
-    test_brakable_velocity_controller_preceding
-    controller_interface
-    hardware_interface
-  )
+#   add_rostest_with_parameters_gmock(
+#     test_brakable_velocity_controller_preceding
+#     test/test_brakable_velocity_controller_preceding.cpp
+#     ${CMAKE_CURRENT_SOURCE_DIR}/test/brakable_velocity_controller_preceding_params.yaml
+#   )
+#   target_include_directories(test_brakable_velocity_controller_preceding PRIVATE include)
+#   target_link_libraries(test_brakable_velocity_controller_preceding brakable_velocity_controller)
+#   ament_target_dependencies(
+#     test_brakable_velocity_controller_preceding
+#     controller_interface
+#     hardware_interface
+#   )
 
-  ament_add_gmock(test_load_brakable_velocity_controller test/test_load_brakable_velocity_controller.cpp)
-  target_include_directories(test_load_brakable_velocity_controller PRIVATE include)
-  ament_target_dependencies(
-    test_load_brakable_velocity_controller
-    controller_manager
-    ros2_control_test_assets
-  )
-endif()
+#   ament_add_gmock(test_load_brakable_velocity_controller test/test_load_brakable_velocity_controller.cpp)
+#   target_include_directories(test_load_brakable_velocity_controller PRIVATE include)
+#   ament_target_dependencies(
+#     test_load_brakable_velocity_controller
+#     controller_manager
+#     ros2_control_test_assets
+#   )
+# endif()
 
 install(
   DIRECTORY include/

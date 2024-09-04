@@ -2,10 +2,10 @@
 
 .. _brakable_velocity_controller_userdoc:
 
-PID Controller
+Brakable Velocity Controller
 --------------------------------
 
-PID Controller implementation that uses PidROS implementation from `control_toolbox <https://github.com/ros-controls/control_toolbox/>`_ package.
+Adaped from PID Controller implementation that uses PidROS implementation from `control_toolbox <https://github.com/ros-controls/control_toolbox/>`_ package.
 The controller can be used directly by sending references through a topic or in a chain having preceding or following controllers.
 It also enables to use the first derivative of the reference and its feedback to have second-order PID control.
 

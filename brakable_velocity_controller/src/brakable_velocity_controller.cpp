@@ -22,7 +22,6 @@
 #include <string>
 #include <vector>
 
-#include "angles/angles.h"
 #include "control_msgs/msg/single_dof_state.hpp"
 #include "controller_interface/helpers.hpp"
 
@@ -46,18 +45,15 @@ static const rmw_qos_profile_t qos_services = {
 using ControllerCommandMsg = brakable_velocity_controller::BrakableVelocityController::ControllerReferenceMsg;
 
 // called from RT control loop
-void reset_controller_reference_msg(
-  const std::shared_ptr<ControllerCommandMsg> & msg, const std::vector<std::string> & dof_names)
+void reset_controller_reference_msg(const std::shared_ptr<ControllerCommandMsg> & msg)
 {
-  msg->dof_names = dof_names;
-  msg->values.resize(dof_names.size(), std::numeric_limits<double>::quiet_NaN());
-  msg->values_dot.resize(dof_names.size(), std::numeric_limits<double>::quiet_NaN());
+  msg->values.resize(1, std::numeric_limits<double>::quiet_NaN());
+  msg->values_dot.resize(1, std::numeric_limits<double>::quiet_NaN());
 }
 
-void reset_controller_measured_state_msg(
-  const std::shared_ptr<ControllerCommandMsg> & msg, const std::vector<std::string> & dof_names)
+void reset_controller_measured_state_msg( const std::shared_ptr<ControllerCommandMsg> & msg)
 {
-  reset_controller_reference_msg(msg, dof_names);
+  reset_controller_reference_msg(msg);
 }
 
 }  // namespace
@@ -68,8 +64,6 @@ BrakableVelocityController::BrakableVelocityController() : controller_interface:
 
 controller_interface::CallbackReturn BrakableVelocityController::on_init()
 {
-  control_mode_.initRT(feedforward_mode_type::OFF);
-
   try
   {
     param_listener_ = std::make_shared<brakable_velocity_controller::ParamListener>(get_node());
@@ -95,49 +89,13 @@ void BrakableVelocityController::update_parameters()
 controller_interface::CallbackReturn BrakableVelocityController::configure_parameters()
 {
   update_parameters();
+  // TODO: Can we check if there're actually interfaces that we're looking for?
 
-  if (!params_.reference_and_state_dof_names.empty())
+  // prefix should be interpreted as parameters prefix
+  pid_ = std::make_shared<control_toolbox::PidROS>(get_node(), "gains", true);
+  if (!pid_->initPid())
   {
-    reference_and_state_dof_names_ = params_.reference_and_state_dof_names;
-  }
-  else
-  {
-    reference_and_state_dof_names_ = params_.dof_names;
-  }
-
-  if (params_.dof_names.size() != reference_and_state_dof_names_.size())
-  {
-    RCLCPP_FATAL(
-      get_node()->get_logger(),
-      "Size of 'dof_names' (%zu) and 'reference_and_state_dof_names' (%zu) parameters has to be "
-      "the same!",
-      params_.dof_names.size(), reference_and_state_dof_names_.size());
     return CallbackReturn::FAILURE;
-  }
-
-  dof_ = params_.dof_names.size();
-
-  // TODO(destogl): is this even possible? Test it...
-  if (params_.gains.dof_names_map.size() != dof_)
-  {
-    RCLCPP_FATAL(
-      get_node()->get_logger(),
-      "Size of 'gains' (%zu) map and number or 'dof_names' (%zu) have to be the same!",
-      params_.gains.dof_names_map.size(), dof_);
-    return CallbackReturn::FAILURE;
-  }
-
-  pids_.resize(dof_);
-
-  for (size_t i = 0; i < dof_; ++i)
-  {
-    // prefix should be interpreted as parameters prefix
-    pids_[i] =
-      std::make_shared<control_toolbox::PidROS>(get_node(), "gains." + params_.dof_names[i], true);
-    if (!pids_[i]->initPid())
-    {
-      return CallbackReturn::FAILURE;
-    }
   }
 
   return CallbackReturn::SUCCESS;
@@ -146,9 +104,7 @@ controller_interface::CallbackReturn BrakableVelocityController::configure_param
 controller_interface::CallbackReturn BrakableVelocityController::on_cleanup(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
-  reference_and_state_dof_names_.clear();
-  pids_.clear();
-
+  pid_->reset();
   return CallbackReturn::SUCCESS;
 }
 
@@ -166,53 +122,18 @@ controller_interface::CallbackReturn BrakableVelocityController::on_configure(
   subscribers_qos.keep_last(1);
   subscribers_qos.best_effort();
 
-  // Reference Subscriber
+  // Reference Subscriber, which part of code unsubscribe when it's in chain mode 
   ref_subscriber_ = get_node()->create_subscription<ControllerReferenceMsg>(
     "~/reference", subscribers_qos,
     std::bind(&BrakableVelocityController::reference_callback, this, std::placeholders::_1));
 
   std::shared_ptr<ControllerReferenceMsg> msg = std::make_shared<ControllerReferenceMsg>();
-  reset_controller_reference_msg(msg, reference_and_state_dof_names_);
+  reset_controller_reference_msg(msg);
   input_ref_.writeFromNonRT(msg);
 
-  // input state Subscriber and callback
-  if (params_.use_external_measured_states)
-  {
-    auto measured_state_callback =
-      [&](const std::shared_ptr<ControllerMeasuredStateMsg> msg) -> void
-    {
-      // TODO(destogl): Sort the input values based on joint and interface names
-      measured_state_.writeFromNonRT(msg);
-    };
-    measured_state_subscriber_ = get_node()->create_subscription<ControllerMeasuredStateMsg>(
-      "~/measured_state", subscribers_qos, measured_state_callback);
-  }
-  std::shared_ptr<ControllerMeasuredStateMsg> measured_state_msg =
-    std::make_shared<ControllerMeasuredStateMsg>();
-  reset_controller_measured_state_msg(measured_state_msg, reference_and_state_dof_names_);
+  std::shared_ptr<ControllerMeasuredStateMsg> measured_state_msg = std::make_shared<ControllerMeasuredStateMsg>();
+  reset_controller_measured_state_msg(measured_state_msg);
   measured_state_.writeFromNonRT(measured_state_msg);
-
-  measured_state_values_.resize(
-    dof_ * params_.reference_and_state_interfaces.size(), std::numeric_limits<double>::quiet_NaN());
-
-  auto set_feedforward_control_callback =
-    [&](
-      const std::shared_ptr<ControllerModeSrvType::Request> request,
-      std::shared_ptr<ControllerModeSrvType::Response> response)
-  {
-    if (request->data)
-    {
-      control_mode_.writeFromNonRT(feedforward_mode_type::ON);
-    }
-    else
-    {
-      control_mode_.writeFromNonRT(feedforward_mode_type::OFF);
-    }
-    response->success = true;
-  };
-
-  set_feedforward_control_service_ = get_node()->create_service<ControllerModeSrvType>(
-    "~/set_feedforward_control", set_feedforward_control_callback, qos_services);
 
   try
   {
@@ -231,11 +152,9 @@ controller_interface::CallbackReturn BrakableVelocityController::on_configure(
 
   // Reserve memory in state publisher
   state_publisher_->lock();
-  state_publisher_->msg_.dof_states.resize(reference_and_state_dof_names_.size());
-  for (size_t i = 0; i < reference_and_state_dof_names_.size(); ++i)
-  {
-    state_publisher_->msg_.dof_states[i].name = reference_and_state_dof_names_[i];
-  }
+  state_publisher_->msg_.dof_states.resize(2);
+  state_publisher_->msg_.dof_states[0].name = params_.velocity_feedforward_dof;
+  state_publisher_->msg_.dof_states[1].name = params_.brake_pid_dof;
   state_publisher_->unlock();
 
   RCLCPP_INFO(get_node()->get_logger(), "configure successful");
@@ -244,55 +163,14 @@ controller_interface::CallbackReturn BrakableVelocityController::on_configure(
 
 void BrakableVelocityController::reference_callback(const std::shared_ptr<ControllerReferenceMsg> msg)
 {
-  if (msg->dof_names.empty() && msg->values.size() == reference_and_state_dof_names_.size())
+  if (msg->values.size() == 1)
   {
-    RCLCPP_WARN(
-      get_node()->get_logger(),
-      "Reference massage does not have DoF names defined. "
-      "Assuming that value have order as defined state DoFs");
-    auto ref_msg = msg;
-    ref_msg->dof_names = reference_and_state_dof_names_;
-    input_ref_.writeFromNonRT(ref_msg);
-  }
-  else if (
-    msg->dof_names.size() == reference_and_state_dof_names_.size() &&
-    msg->values.size() == reference_and_state_dof_names_.size())
-  {
-    auto ref_msg = msg;  // simple initialization
-
-    // sort values in the ref_msg
-    reset_controller_reference_msg(msg, reference_and_state_dof_names_);
-
-    bool all_found = true;
-    for (size_t i = 0; i < msg->dof_names.size(); ++i)
-    {
-      auto found_it =
-        std::find(ref_msg->dof_names.begin(), ref_msg->dof_names.end(), msg->dof_names[i]);
-      if (found_it == msg->dof_names.end())
-      {
-        all_found = false;
-        RCLCPP_WARN(
-          get_node()->get_logger(), "DoF name '%s' not found in the defined list of state DoFs.",
-          msg->dof_names[i].c_str());
-        break;
-      }
-
-      auto position = std::distance(ref_msg->dof_names.begin(), found_it);
-      ref_msg->values[position] = msg->values[i];
-      ref_msg->values_dot[position] = msg->values_dot[i];
-    }
-
-    if (all_found)
-    {
-      input_ref_.writeFromNonRT(ref_msg);
-    }
-  }
-  else
+    input_ref_.writeFromNonRT(msg);
+  } else
   {
     RCLCPP_ERROR(
       get_node()->get_logger(),
-      "Size of input data names (%zu) and/or values (%zu) is not matching the expected size (%zu).",
-      msg->dof_names.size(), msg->values.size(), reference_and_state_dof_names_.size());
+      "Size of input data expected to be only one, just to control the target velocity");
   }
 }
 
@@ -300,59 +178,36 @@ controller_interface::InterfaceConfiguration BrakableVelocityController::command
 {
   controller_interface::InterfaceConfiguration command_interfaces_config;
   command_interfaces_config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
-
-  command_interfaces_config.names.reserve(params_.dof_names.size());
-  for (const auto & dof_name : params_.dof_names)
-  {
-    command_interfaces_config.names.push_back(dof_name + "/" + params_.command_interface);
-  }
+  command_interfaces_config.names.reserve(2);
+  command_interfaces_config.names.push_back(params_.velocity_feedforward_dof + "/velocity");
+  command_interfaces_config.names.push_back(params_.brake_pid_dof + "/position");
 
   return command_interfaces_config;
 }
 
 controller_interface::InterfaceConfiguration BrakableVelocityController::state_interface_configuration() const
 {
+  /* Use just what we need */
   controller_interface::InterfaceConfiguration state_interfaces_config;
-
-  if (params_.use_external_measured_states)
-  {
-    state_interfaces_config.type = controller_interface::interface_configuration_type::NONE;
-  }
-  else
-  {
-    state_interfaces_config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
-
-    state_interfaces_config.names.reserve(dof_ * params_.reference_and_state_interfaces.size());
-    for (const auto & interface : params_.reference_and_state_interfaces)
-    {
-      for (const auto & dof_name : reference_and_state_dof_names_)
-      {
-        state_interfaces_config.names.push_back(dof_name + "/" + interface);
-      }
-    }
-  }
-
+  state_interfaces_config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+  state_interfaces_config.names.reserve(1);
+  // state_interfaces_config.names.reserve(3);
+  state_interfaces_config.names.push_back(params_.velocity_feedforward_dof + "/velocity");
+  // state_interfaces_config.names.push_back(params_.velocity_feedforward_dof + "/position");
+  // state_interfaces_config.names.push_back(params_.brake_pid_dof + "/position");
+  
   return state_interfaces_config;
 }
 
 std::vector<hardware_interface::CommandInterface> BrakableVelocityController::on_export_reference_interfaces()
 {
-  reference_interfaces_.resize(
-    dof_ * params_.reference_and_state_interfaces.size(), std::numeric_limits<double>::quiet_NaN());
+  reference_interfaces_.resize(1, std::numeric_limits<double>::quiet_NaN());
 
   std::vector<hardware_interface::CommandInterface> reference_interfaces;
   reference_interfaces.reserve(reference_interfaces_.size());
 
-  size_t index = 0;
-  for (const auto & interface : params_.reference_and_state_interfaces)
-  {
-    for (const auto & dof_name : reference_and_state_dof_names_)
-    {
-      reference_interfaces.push_back(hardware_interface::CommandInterface(
-        get_node()->get_name(), dof_name + "/" + interface, &reference_interfaces_[index]));
-      ++index;
-    }
-  }
+  reference_interfaces.push_back(hardware_interface::CommandInterface(
+        get_node()->get_name(), params_.velocity_feedforward_dof + "/velocity", &reference_interfaces_[0]));
 
   return reference_interfaces;
 }
@@ -367,14 +222,11 @@ controller_interface::CallbackReturn BrakableVelocityController::on_activate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
   // Set default value in command (the same number as state interfaces)
-  reset_controller_reference_msg(*(input_ref_.readFromRT()), reference_and_state_dof_names_);
-  reset_controller_measured_state_msg(
-    *(measured_state_.readFromRT()), reference_and_state_dof_names_);
+  reset_controller_reference_msg(*(input_ref_.readFromRT()));
+  reset_controller_measured_state_msg(*(measured_state_.readFromRT()));
 
-  reference_interfaces_.assign(
-    reference_interfaces_.size(), std::numeric_limits<double>::quiet_NaN());
-  measured_state_values_.assign(
-    measured_state_values_.size(), std::numeric_limits<double>::quiet_NaN());
+  reference_interfaces_.assign(1, std::numeric_limits<double>::quiet_NaN());
+  measured_state_values_.assign(1, std::numeric_limits<double>::quiet_NaN());
 
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -389,19 +241,12 @@ controller_interface::return_type BrakableVelocityController::update_reference_f
 {
   auto current_ref = input_ref_.readFromRT();
 
-  for (size_t i = 0; i < dof_; ++i)
+  if (!std::isnan((*current_ref)->values[0]))
   {
-    if (!std::isnan((*current_ref)->values[i]))
-    {
-      reference_interfaces_[i] = (*current_ref)->values[i];
-      if (reference_interfaces_.size() == 2 * dof_ && !std::isnan((*current_ref)->values_dot[i]))
-      {
-        reference_interfaces_[dof_ + i] = (*current_ref)->values_dot[i];
-      }
-
-      (*current_ref)->values[i] = std::numeric_limits<double>::quiet_NaN();
-    }
+    reference_interfaces_[0] = (*current_ref)->values[0];
+    (*current_ref)->values[0] = std::numeric_limits<double>::quiet_NaN();
   }
+
   return controller_interface::return_type::OK;
 }
 
@@ -411,109 +256,46 @@ controller_interface::return_type BrakableVelocityController::update_and_write_c
   // check for any parameter updates
   update_parameters();
 
-  if (params_.use_external_measured_states)
+  // read measure state
+  measured_state_values_[0] = state_interfaces_[0].get_value();
+
+  double brake_command = std::numeric_limits<double>::quiet_NaN();
+
+  if (!std::isnan(reference_interfaces_[0]) && !std::isnan(measured_state_values_[0]))
   {
-    const auto measured_state = *(measured_state_.readFromRT());
-    for (size_t i = 0; i < dof_; ++i)
-    {
-      measured_state_values_[i] = measured_state->values[i];
-      if (measured_state_values_.size() == 2 * dof_)
-      {
-        measured_state_values_[dof_ + i] = measured_state->values_dot[i];
-      }
-    }
+    brake_command = 0.0;
+    double velocity_error = reference_interfaces_[0] - measured_state_values_[0];
+
+    // use calculation with 'velocity_error' only
+    brake_command += pid_->computeCommand(velocity_error, period);
+    if(brake_command > params_.brake_limits.upper)
+      brake_command = params_.brake_limits.upper;
+    else if(brake_command < params_.brake_limits.lower)
+      brake_command = params_.brake_limits.lower;
+
+    // write calculated values
+    command_interfaces_[0].set_value(reference_interfaces_[0]);
+    command_interfaces_[1].set_value(brake_command);
   }
-  else
-  {
-    for (size_t i = 0; i < measured_state_values_.size(); ++i)
-    {
-      measured_state_values_[i] = state_interfaces_[i].get_value();
-    }
-  }
-
-  for (size_t i = 0; i < dof_; ++i)
-  {
-    double tmp_command = std::numeric_limits<double>::quiet_NaN();
-
-    // Using feedforward
-    if (!std::isnan(reference_interfaces_[i]) && !std::isnan(measured_state_values_[i]))
-    {
-      // calculate feed-forward
-      if (*(control_mode_.readFromRT()) == feedforward_mode_type::ON)
-      {
-        tmp_command = reference_interfaces_[dof_ + i] *
-                      params_.gains.dof_names_map[params_.dof_names[i]].feedforward_gain;
-      }
-      else
-      {
-        tmp_command = 0.0;
-      }
-
-      double error = reference_interfaces_[i] - measured_state_values_[i];
-      if (params_.gains.dof_names_map[params_.dof_names[i]].angle_wraparound)
-      {
-        // for continuous angles the error is normalized between -pi<error<pi
-        error =
-          angles::shortest_angular_distance(measured_state_values_[i], reference_interfaces_[i]);
-      }
-
-      // checking if there are two interfaces
-      if (reference_interfaces_.size() == 2 * dof_ && measured_state_values_.size() == 2 * dof_)
-      {
-        if (
-          !std::isnan(reference_interfaces_[dof_ + i]) &&
-          !std::isnan(measured_state_values_[dof_ + i]))
-        {
-          // use calculation with 'error' and 'error_dot'
-          tmp_command += pids_[i]->computeCommand(
-            error, reference_interfaces_[dof_ + i] - measured_state_values_[dof_ + i], period);
-        }
-        else
-        {
-          // Fallback to calculation with 'error' only
-          tmp_command += pids_[i]->computeCommand(error, period);
-        }
-      }
-      else
-      {
-        // use calculation with 'error' only
-        tmp_command += pids_[i]->computeCommand(error, period);
-      }
-
-      // write calculated values
-      command_interfaces_[i].set_value(tmp_command);
-    }
-  }
+  
 
   if (state_publisher_ && state_publisher_->trylock())
   {
     state_publisher_->msg_.header.stamp = time;
-    for (size_t i = 0; i < dof_; ++i)
-    {
-      state_publisher_->msg_.dof_states[i].reference = reference_interfaces_[i];
-      state_publisher_->msg_.dof_states[i].feedback = measured_state_values_[i];
-      if (reference_interfaces_.size() == 2 * dof_ && measured_state_values_.size() == 2 * dof_)
-      {
-        state_publisher_->msg_.dof_states[i].feedback_dot = measured_state_values_[dof_ + i];
-      }
-      state_publisher_->msg_.dof_states[i].error =
-        reference_interfaces_[i] - measured_state_values_[i];
-      if (params_.gains.dof_names_map[params_.dof_names[i]].angle_wraparound)
-      {
-        // for continuous angles the error is normalized between -pi<error<pi
-        state_publisher_->msg_.dof_states[i].error =
-          angles::shortest_angular_distance(measured_state_values_[i], reference_interfaces_[i]);
-      }
-      if (reference_interfaces_.size() == 2 * dof_ && measured_state_values_.size() == 2 * dof_)
-      {
-        state_publisher_->msg_.dof_states[i].error_dot =
-          reference_interfaces_[dof_ + i] - measured_state_values_[dof_ + i];
-      }
-      state_publisher_->msg_.dof_states[i].time_step = period.seconds();
-      // Command can store the old calculated values. This should be obvious because at least one
-      // another value is NaN.
-      state_publisher_->msg_.dof_states[i].output = command_interfaces_[i].get_value();
-    }
+
+    state_publisher_->msg_.dof_states[0].reference = reference_interfaces_[0];
+    state_publisher_->msg_.dof_states[0].feedback = measured_state_values_[0];
+    state_publisher_->msg_.dof_states[0].error = reference_interfaces_[0] - measured_state_values_[0];
+    state_publisher_->msg_.dof_states[0].time_step = period.seconds();
+    state_publisher_->msg_.dof_states[0].output = command_interfaces_[0].get_value();
+
+    state_publisher_->msg_.dof_states[1].reference = reference_interfaces_[1];
+    state_publisher_->msg_.dof_states[1].feedback = 0.0;
+    state_publisher_->msg_.dof_states[1].error = 0.0;
+    state_publisher_->msg_.dof_states[1].time_step = period.seconds();
+    state_publisher_->msg_.dof_states[1].output = command_interfaces_[1].get_value();
+
+
     state_publisher_->unlockAndPublish();
   }
 
