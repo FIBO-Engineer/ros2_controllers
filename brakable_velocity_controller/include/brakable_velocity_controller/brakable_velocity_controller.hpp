@@ -85,7 +85,6 @@ public:
 
   using ControllerReferenceMsg = control_msgs::msg::MultiDOFCommand;
   using ControllerMeasuredStateMsg = control_msgs::msg::MultiDOFCommand;
-  using ControllerModeSrvType = std_srvs::srv::SetBool;
   using ControllerStateMsg = control_msgs::msg::MultiDOFStateStamped;
 
 protected:
